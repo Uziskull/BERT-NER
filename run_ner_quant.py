@@ -26,12 +26,12 @@ import torch.nn.utils.prune
 
 ##########################################
 
-# import pytorch_lightning.callbacks.quantization
+import pytorch_lightning.callbacks.quantization
 
-# from quant_helper import _multiarg_wrap_qat, _multiarg_wrap_quantize
+from quant_helper import _multiarg_wrap_qat, _multiarg_wrap_quantize
 
-# pytorch_lightning.callbacks.quantization.wrap_qat_forward_context = _multiarg_wrap_qat
-# pytorch_lightning.callbacks.quantization.wrap_quantize_forward_context = _multiarg_wrap_quantize
+pytorch_lightning.callbacks.quantization.wrap_qat_forward_context = _multiarg_wrap_qat
+pytorch_lightning.callbacks.quantization.wrap_quantize_forward_context = _multiarg_wrap_quantize
 
 from pytorch_lightning.callbacks import QuantizationAwareTraining
 
@@ -46,45 +46,49 @@ logger = logging.getLogger(__name__)
 
 class Ner(BertForTokenClassification):
 
-    #def forward(self, input_ids, token_type_ids=None, attention_mask=None, labels=None,valid_ids=None,attention_mask_label=None):
-    def forward(self, input_ids):
-        # print('input_ids')
-        # print(input_ids)
-        for k in ["token_type_ids", "attention_mask", "labels", "valid_ids", "attention_mask_label"]:
-            if k not in self.tempinput:
-                self.tempinput[k] = None
-            # else:
-                # print(k)
-                # print(self.tempinput[k])
-        #if not input_ids.is_quantized:
-        input_ids = input_ids.long()
-        sequence_output = self.bert(input_ids, self.tempinput["token_type_ids"], self.tempinput["attention_mask"], head_mask=None)[0]
+    #def forward(self, input_ids):
+    def forward(self, input_ids, token_type_ids=None, attention_mask=None, labels=None,valid_ids=None,attention_mask_label=None):
+        # for k in ["token_type_ids", "attention_mask", "labels", "valid_ids", "attention_mask_label"]:
+            # if k not in self.tempinput:
+                # self.tempinput[k] = None
+        # if not input_ids.is_quantized:
+            # input_ids = input_ids.long()
+            # token_type_ids = token_type_ids.long() if token_type_ids is not None else None
+            # attention_mask = attention_mask.long() if attention_mask is not None else None
+            # labels = labels.long() if labels is not None else None
+            # valid_ids = valid_ids.long() if valid_ids is not None else None
+            # attention_mask_label = attention_mask_label.long() if attention_mask_label is not None else None
+        #sequence_output = self.bert(input_ids, self.tempinput["token_type_ids"], self.tempinput["attention_mask"], head_mask=None)[0]
+        print(valid_ids)
+        sequence_output = self.bert(input_ids, token_type_ids, attention_mask, head_mask=None)[0]
         batch_size,max_len,feat_dim = sequence_output.shape
         valid_output = torch.zeros(batch_size,max_len,feat_dim,dtype=torch.float32,device='cuda')
         for i in range(batch_size):
             jj = -1
             for j in range(max_len):
-                    if self.tempinput["valid_ids"][i][j].item() == 1:
+                    #if self.tempinput["valid_ids"][i][j].item() == 1:
+                    if valid_ids[i][j].item() == 1:
                         jj += 1
                         valid_output[i][jj] = sequence_output[i][j]
-        # print(sequence_output)
         sequence_output = self.dropout(valid_output)
-        # print(sequence_output)
         logits = self.classifier(sequence_output)
-        # print(logits)
-
-        if self.tempinput["labels"] is not None:
+        
+        #if self.tempinput["labels"] is not None:
+        if labels is not None:
             loss_fct = nn.CrossEntropyLoss(ignore_index=0)
             # Only keep active parts of the loss
             #attention_mask_label = None
-            if self.tempinput["attention_mask_label"] is not None:
-                active_loss = self.tempinput["attention_mask_label"].view(-1) == 1
+            #if self.tempinput["attention_mask_label"] is not None:
+            if attention_mask_label is not None:
+                #active_loss = self.tempinput["attention_mask_label"].view(-1) == 1
+                active_loss = attention_mask_label.view(-1) == 1
                 active_logits = logits.view(-1, self.num_labels)[active_loss]
-                active_labels = self.tempinput["labels"].view(-1)[active_loss]
+                #active_labels = self.tempinput["labels"].view(-1)[active_loss]
+                active_labels = labels.view(-1)[active_loss]
                 loss = loss_fct(active_logits, active_labels)
             else:
-                loss = loss_fct(logits.view(-1, self.num_labels), self.tempinput["labels"].view(-1))
-            # print(loss)
+                #loss = loss_fct(logits.view(-1, self.num_labels), self.tempinput["labels"].view(-1))
+                loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
             return loss
         else:
             return logits
@@ -494,21 +498,6 @@ def main():
         qat = QuantizationAwareTraining(
             input_compatible=True,
             qconfig="qnnpack"
-            
-            # qconfig=torch.quantization.QConfig(
-                # activation=torch.quantization.FakeQuantize.with_args(
-                    # observer=torch.quantization.MovingAverageMinMaxObserver,
-                    # quant_min=0,
-                    # quant_max=255,
-                    # reduce_range=False
-                # ),
-                # weight=torch.quantization.FakeQuantize.with_args(
-                    # observer=torch.quantization.MovingAverageMinMaxObserver,
-                    # quant_min=0,
-                    # quant_max=255,
-                    # reduce_range=False
-                # )
-            # )
         )
         qat.on_fit_start(None, model)
 
@@ -580,9 +569,21 @@ def main():
                 batch = tuple(t.to(device) for t in batch)
                 input_ids, input_mask, segment_ids, label_ids, valid_ids,l_mask = batch
                 
-                #loss = model(input_ids, segment_ids, input_mask, label_ids,valid_ids,l_mask)
-                model.tempinput = {"token_type_ids": segment_ids, "attention_mask": input_mask, "labels": label_ids, "valid_ids": valid_ids, "attention_mask_label": l_mask}
-                loss = model(input_ids.float())
+                print('input_ids')
+                print(input_ids)
+                print('segment_ids')
+                print(segment_ids)
+                print('input_mask')
+                print(input_mask)
+                print('label_ids')
+                print(label_ids)
+                print('valid_ids')
+                print(valid_ids)
+                print('l_mask')
+                print(l_mask)
+                loss = model(input_ids, segment_ids, input_mask, label_ids,valid_ids,l_mask)
+                #model.tempinput = {"token_type_ids": segment_ids, "attention_mask": input_mask, "labels": label_ids, "valid_ids": valid_ids, "attention_mask_label": l_mask}
+                #loss = model(input_ids.float())
                 
                 if n_gpu > 1:
                     loss = loss.mean() # mean() to average on multi-gpu.
@@ -645,9 +646,9 @@ def main():
                     l_mask = l_mask.to(device)
 
                     with torch.no_grad():
-                        #logits = model(input_ids, segment_ids, input_mask,valid_ids=valid_ids,attention_mask_label=l_mask)
-                        model.tempinput = {"token_type_ids": segment_ids, "attention_mask": input_mask, "valid_ids": valid_ids, "attention_mask_label": l_mask}
-                        logits = model(input_ids.float())
+                        logits = model(input_ids, segment_ids, input_mask, None, valid_ids, l_mask)
+                        #model.tempinput = {"token_type_ids": segment_ids, "attention_mask": input_mask, "valid_ids": valid_ids, "attention_mask_label": l_mask}
+                        #logits = model(input_ids.float())
 
                     logits = torch.argmax(F.log_softmax(logits,dim=2),dim=2)
                     logits = logits.detach().cpu().numpy()
@@ -754,9 +755,9 @@ def main():
                 l_mask = l_mask.to(device)
         
                 with torch.no_grad():
-                        #logits = model(input_ids, segment_ids, input_mask,valid_ids=valid_ids,attention_mask_label=l_mask)
-                        model.tempinput = {"token_type_ids": segment_ids, "attention_mask": input_mask, "valid_ids": valid_ids, "attention_mask_label": l_mask}
-                        logits = model(input_ids)
+                        logits = model(input_ids, segment_ids, input_mask, None, valid_ids, l_mask)
+                        #model.tempinput = {"token_type_ids": segment_ids, "attention_mask": input_mask, "valid_ids": valid_ids, "attention_mask_label": l_mask}
+                        #logits = model(input_ids)
         
                 logits = torch.argmax(F.log_softmax(logits,dim=2),dim=2)
                 logits = logits.detach().cpu().numpy()
